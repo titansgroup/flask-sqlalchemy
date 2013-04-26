@@ -14,6 +14,7 @@ import re
 import sys
 import time
 import functools
+import urlparse 
 import sqlalchemy
 from math import ceil
 from functools import partial
@@ -166,12 +167,8 @@ class _SignalTrackingMapperExtension(MapperExtension):
         return self._record(mapper, instance, 'update')
 
     def _record(self, mapper, model, operation):
-        s = orm.object_session(model)
-        # Skip the operation tracking when a non signalling session
-        # is used.
-        if isinstance(s, _SignallingSessionExtension):
-            pk = tuple(mapper.primary_key_from_instance(model))
-            s._model_changes[pk] = (model, operation)
+        pk = tuple(mapper.primary_key_from_instance(model))
+        orm.object_session(model)._model_changes[pk] = (model, operation)
         return EXT_CONTINUE
 
 
@@ -385,15 +382,7 @@ class BaseQuery(orm.Query):
         items = self.limit(per_page).offset((page - 1) * per_page).all()
         if not items and page != 1 and error_out:
             abort(404)
-
-        # No need to count if we're on the first page and there are fewer
-        # items than we expected.
-        if page == 1 and len(items) < per_page:
-            total = len(items)
-        else:
-            total = self.order_by(None).count()
-
-        return Pagination(self, page, per_page, total, items)
+        return Pagination(self, page, per_page, self.count(), items)
 
 
 class _QueryProperty(object):
@@ -438,10 +427,30 @@ class _EngineConnector(object):
             'configuration variable' % self._bind
         return binds[self._bind]
 
+    def get_pool_args(self):
+        uri = self.get_uri()
+        
+        p = urlparse.urlparse(uri)
+        pool_args = {"db": p.path.strip('/'),
+                     "user": p.username,
+                     "passwd": p.password,
+                     "host": p.hostname,
+                     }
+
+
+        pool_args["min_size"] = self._app.config.get('SQLALCHEMY_EVENTLET_MIN_SIZE', 0)
+        pool_args["max_size"] = self._app.config.get('SQLALCHEMY_EVENTLET_MAX_SIZE', 4)
+        pool_args["max_idle"] = self._app.config.get('SQLALCHEMY_EVENTLET_MAX_IDLE', 10)
+        pool_args["max_age"] = self._app.config.get('SQLALCHEMY_EVENTLET_MAX_AGE', 30)
+        pool_args["connect_timeout"] = self._app.config.get('SQLALCHEMY_EVENTLET_TIMEOUT', 5)
+        
+        return pool_args
+
     def get_engine(self):
         with self._lock:
             uri = self.get_uri()
             echo = self._app.config['SQLALCHEMY_ECHO']
+            green = self._app.config['SQLALCHEMY_EVENTLET_POOL']
             if (uri, echo) == self._connected_for:
                 return self._engine
             info = make_url(uri)
@@ -452,6 +461,21 @@ class _EngineConnector(object):
                 options['proxy'] = _ConnectionDebugProxy(self._app.import_name)
             if echo:
                 options['echo'] = True
+
+            if green:
+                if not uri.startswith('mysql'):
+                    raise RuntimeError("Eventlet support for MySQL only.")
+
+                import MySQLdb
+                import eventlet.db_pool
+                pool_args = self.get_pool_args()
+                creator = eventlet.db_pool.ConnectionPool(MySQLdb, **pool_args)
+
+                def _creator(*args, **kwds):
+                    return creator.create(*args, **kwds)[2]
+
+                options['creator'] = _creator
+
             self._engine = rv = sqlalchemy.create_engine(info, **options)
             self._connected_for = (uri, echo)
             return rv
@@ -676,7 +700,7 @@ class SQLAlchemy(object):
         app.config.setdefault('SQLALCHEMY_POOL_SIZE', None)
         app.config.setdefault('SQLALCHEMY_POOL_TIMEOUT', None)
         app.config.setdefault('SQLALCHEMY_POOL_RECYCLE', None)
-        app.config.setdefault('SQLALCHEMY_COMMIT_ON_TEARDOWN', False)
+        app.config.setdefault('SQLALCHEMY_EVENTLET_POOL', False)
 
         if not hasattr(app, 'extensions'):
             app.extensions = {}
@@ -690,17 +714,12 @@ class SQLAlchemy(object):
             teardown = app.teardown_request
         # Older Flask versions
         else:
-            if app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN']:
-                raise RuntimeError("Commit on teardown requires Flask >= 0.7")
             teardown = app.after_request
 
         @teardown
-        def shutdown_session(response_or_exc):
-            if app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN']:
-                if response_or_exc is None:
-                    self.session.commit()
+        def shutdown_session(response):
             self.session.remove()
-            return response_or_exc
+            return response
 
     def apply_pool_defaults(self, app, options):
         def _setdefault(optionkey, configkey):
@@ -721,7 +740,7 @@ class SQLAlchemy(object):
         like pool sizes for MySQL and sqlite.  Also it injects the setting of
         `SQLALCHEMY_NATIVE_UNICODE`.
         """
-        if info.drivername.startswith('mysql'):
+        if info.drivername == 'mysql':
             info.query.setdefault('charset', 'utf8')
             options.setdefault('pool_size', 10)
             options.setdefault('pool_recycle', 7200)
@@ -821,7 +840,7 @@ class SQLAlchemy(object):
 
         if bind == '__all__':
             binds = [None] + list(app.config.get('SQLALCHEMY_BINDS') or ())
-        elif isinstance(bind, basestring) or bind is None:
+        elif isinstance(bind, basestring):
             binds = [bind]
         else:
             binds = bind
