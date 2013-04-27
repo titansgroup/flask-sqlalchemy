@@ -476,6 +476,10 @@ class _EngineConnector(object):
 
                 options['creator'] = _creator
 
+                # make sure we use the null pool
+                from sqlalchemy.pool import NullPool
+                options['poolclass'] = NullPoll
+
             self._engine = rv = sqlalchemy.create_engine(info, **options)
             self._connected_for = (uri, echo)
             return rv
