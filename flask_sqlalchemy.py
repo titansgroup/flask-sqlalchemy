@@ -187,12 +187,16 @@ class _SessionSignalEvents(object):
 
     @staticmethod
     def session_signal_before_commit(session):
+        if not isinstance(session, _SignallingSession):
+            return
         d = session._model_changes
         if d:
             before_models_committed.send(session.app, changes=d.values())
 
     @staticmethod
     def session_signal_after_commit(session):
+        if not isinstance(session, _SignallingSession):
+            return
         d = session._model_changes
         if d:
             models_committed.send(session.app, changes=d.values())
@@ -200,6 +204,8 @@ class _SessionSignalEvents(object):
 
     @staticmethod
     def session_signal_after_rollback(session):
+        if not isinstance(session, _SignallingSession):
+            return
         session._model_changes.clear()
 
 
@@ -224,8 +230,11 @@ class _MapperSignalEvents(object):
 
     @staticmethod
     def _record(mapper, target, operation):
-        pk = tuple(mapper.primary_key_from_instance(target))
-        orm.object_session(target)._model_changes[pk] = (target, operation)
+        s = orm.object_session(target)
+        if isinstance(s, _SignallingSession):
+            pk = tuple(mapper.primary_key_from_instance(target))
+            s._model_changes[pk] = (target, operation)
+
 
 def get_debug_queries():
     """In debug mode Flask-SQLAlchemy will log all the SQL queries sent
