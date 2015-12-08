@@ -462,7 +462,8 @@ class _EngineConnector(object):
         pool_args["max_age"] = self._app.config.get('SQLALCHEMY_EVENTLET_MAX_AGE', 30)
         pool_args["connect_timeout"] = self._app.config.get('SQLALCHEMY_EVENTLET_TIMEOUT', 5)
         pool_args["charset"] = self._app.config.get('SQLALCHEMY_EVENTLET_POOL_CHARSET', 'utf8')
-        
+        pool_args["client_flag"] = 2 # FOUND_ROWS
+
         return pool_args
 
     def get_engine(self):
