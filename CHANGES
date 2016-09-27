@@ -4,6 +4,12 @@ Changelog
 Here you can see the full list of changes between each Flask-SQLAlchemy
 release.
 
+Version 0.19
+````````````
+
+- Changed the project name and up for titans pypi.
+
+
 Version 0.16
 ````````````
 
